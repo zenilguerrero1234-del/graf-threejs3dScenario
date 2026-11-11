@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+	<head>
+		<title>three.js webgl - Twist Dance en estudio</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+		<style>
+			#cargando {
+				position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+				padding: 12px 20px; border-radius: 6px; background: rgba(0, 0, 0, 0.75);
+				color: #fff; font-family: monospace; font-size: 16px; z-index: 10;
+			}
+			#controlesMusica {
+				position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+				text-align: center; z-index: 10; font-family: monospace;
+			}
+			#btnMusica {
+				padding: 10px 18px; border: 0; border-radius: 6px; cursor: pointer;
+				background: #4fd1c5; color: #111; font-family: monospace; font-size: 15px;
+			}
+			#avisoMusica { margin-top: 6px; color: #fff; font-size: 12px; text-shadow: 0 0 4px #000; }
+		</style>
+	</head>
+
+	<body>
+		<div id="info">
+			<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - FBXLoader + HDR + audio<br />
+			Personaje y animación de <a href="https://www.mixamo.com/" target="_blank" rel="noopener">Mixamo</a> (Twist Dance)
+		</div>
+
+		<div id="cargando">Cargando escenario...</div>
+
+		<div id="controlesMusica">
+			<button id="btnMusica">Música: pausada</button>
+			<div id="avisoMusica">Haz clic en cualquier parte para iniciar la música</div>
+		</div>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.module.js",
+					"three/addons/": "./jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+			import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+
+			// ---------------------------------------------------------------------
+			// Rutas de los archivos (relativas a esta página, que está en /examples/)
+			// ---------------------------------------------------------------------
+			const RUTAS = {
+				modelo: 'models/fbx/Twist Dance.fbx',
+				hdr: 'models/rgbe/ferndale_studio_12_4k.hdr',
+				musica: 'models/audio/musica_dev.mp3',
+				piso: 'textures/piso_pista.png',
+				skin: 'textures/skin_dev.png'
+			};
+
+			// Ajustes de la textura del personaje (si algo no cuadra, se mueve aquí)
+			const AJUSTES_SKIN = {
+				anchoRelativo: 1.2 // ancho de la textura respecto a la altura del modelo
+			};
+
+			const manager = new THREE.LoadingManager();
+			manager.onLoad = function () {
+
+				document.getElementById( 'cargando' ).style.display = 'none';
+
+			};
+
+			let camera, scene, renderer, mixer, listener, musica;
+			let quiereMusica = false;
+
+			const clock = new THREE.Clock();
+
+			init();
+
+			function init() {
+
+				const container = document.createElement( 'div' );
+				document.body.appendChild( container );
+
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.setAnimationLoop( animate );
+				renderer.shadowMap.enabled = true;
+				renderer.toneMapping = THREE.ACESFilmicToneMapping;
+				container.appendChild( renderer.domElement );
+
+				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 3000 );
+				camera.position.set( 120, 170, 340 );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0x202020 ); // mientras carga el HDR
+
+				// Luces (el HDR ya aporta bastante luz ambiental, por eso van bajas)
+				const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x444444, 0.5 );
+				hemiLight.position.set( 0, 200, 0 );
+				scene.add( hemiLight );
+
+				const dirLight = new THREE.DirectionalLight( 0xffffff, 2 );
+				dirLight.position.set( 120, 250, 150 );
+				dirLight.castShadow = true;
+				dirLight.shadow.mapSize.set( 2048, 2048 );
+				dirLight.shadow.camera.top = 250;
+				dirLight.shadow.camera.bottom = - 250;
+				dirLight.shadow.camera.left = - 250;
+				dirLight.shadow.camera.right = 250;
+				dirLight.shadow.camera.far = 700;
+				scene.add( dirLight );
+
+				// ---------------------------------------------------------------
+				// ESCENARIO 3D (HDR): fondo y luz del ambiente
+				// ---------------------------------------------------------------
+				new RGBELoader( manager ).load( RUTAS.hdr, function ( texture ) {
+
+					texture.mapping = THREE.EquirectangularReflectionMapping;
+					scene.background = texture;
+					scene.environment = texture;
+
+				} );
+
+				// ---------------------------------------------------------------
+				// PISO: plano cuadrado con textura de madera que se repite
+				// ---------------------------------------------------------------
+				// PISO: pista de baile con baldosas luminosas
+				const texturaPiso = new THREE.TextureLoader( manager ).load( RUTAS.piso );
+				texturaPiso.wrapS = texturaPiso.wrapT = THREE.RepeatWrapping;
+				texturaPiso.repeat.set( 5, 5 ); // cada repetición son 2x2 baldosas
+				texturaPiso.colorSpace = THREE.SRGBColorSpace;
+				texturaPiso.magFilter = THREE.NearestFilter; // look pixelado
+				texturaPiso.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+				const piso = new THREE.Mesh(
+					new THREE.PlaneGeometry( 500, 500 ),
+					new THREE.MeshStandardMaterial( {
+						map: texturaPiso,
+						emissiveMap: texturaPiso, // los bordes de las baldosas brillan
+						emissive: 0xffffff,
+						emissiveIntensity: 0.6,
+						roughness: 0.35, // piso brillante que refleja el estudio
+						metalness: 0.2
+					} )
+				);
+				piso.rotation.x = - Math.PI / 2;
+				piso.receiveShadow = true;
+				scene.add( piso );
+
+				// ---------------------------------------------------------------
+				// MODELO FBX + TEXTURA (skin de desarrollador web)
+				// ---------------------------------------------------------------
+				const texturaSkin = new THREE.TextureLoader( manager ).load( RUTAS.skin );
+				texturaSkin.colorSpace = THREE.SRGBColorSpace;
+				texturaSkin.magFilter = THREE.NearestFilter; // pixeles marcados, estilo Minecraft
+				texturaSkin.minFilter = THREE.NearestMipmapLinearFilter;
+
+				new FBXLoader( manager ).load( RUTAS.modelo, function ( object ) {
+
+					if ( object.animations && object.animations.length ) {
+
+						mixer = new THREE.AnimationMixer( object );
+						mixer.clipAction( object.animations[ 0 ] ).play();
+
+					}
+
+					aplicarSkin( object, texturaSkin );
+					scene.add( object );
+
+				} );
+
+				// ---------------------------------------------------------------
+				// MÚSICA DE FONDO (mp3)
+				// ---------------------------------------------------------------
+				listener = new THREE.AudioListener();
+				camera.add( listener );
+
+				musica = new THREE.Audio( listener );
+				new THREE.AudioLoader( manager ).load( RUTAS.musica, function ( buffer ) {
+
+					musica.setBuffer( buffer );
+					musica.setLoop( true );
+					musica.setVolume( 0.5 );
+
+					// si ya hicieron clic mientras cargaba, arranca de una vez
+					if ( quiereMusica && ! musica.isPlaying ) musica.play();
+
+				} );
+
+				const btn = document.getElementById( 'btnMusica' );
+				btn.addEventListener( 'click', function ( e ) {
+
+					e.stopPropagation();
+					window.removeEventListener( 'click', primerClic );
+					quiereMusica ? pausarMusica() : iniciarMusica();
+
+				} );
+
+				// Los navegadores bloquean el audio hasta que hay un clic del usuario
+				window.addEventListener( 'click', primerClic, { once: true } );
+
+				// ---------------------------------------------------------------
+				const controls = new OrbitControls( camera, renderer.domElement );
+				controls.target.set( 0, 95, 0 );
+				controls.minDistance = 120;
+				controls.maxDistance = 700;
+				controls.maxPolarAngle = Math.PI / 2 - 0.02; // la cámara no baja del piso
+				controls.update();
+
+				window.addEventListener( 'resize', onWindowResize );
+
+			}
+
+			function primerClic() {
+
+				iniciarMusica();
+
+			}
+
+			function iniciarMusica() {
+
+				quiereMusica = true;
+				if ( listener.context.state === 'suspended' ) listener.context.resume();
+				if ( musica.buffer && ! musica.isPlaying ) musica.play();
+				actualizarBoton();
+
+			}
+
+			function pausarMusica() {
+
+				quiereMusica = false;
+				if ( musica.isPlaying ) musica.pause();
+				actualizarBoton();
+
+			}
+
+			function actualizarBoton() {
+
+				document.getElementById( 'btnMusica' ).textContent = quiereMusica ? 'Música: sonando (clic para pausar)' : 'Música: pausada (clic para iniciar)';
+				document.getElementById( 'avisoMusica' ).style.display = 'none';
+
+			}
+
+			// -------------------------------------------------------------------
+			// La skin del personaje se proyecta de frente según la posición de cada
+			// vértice: la altura (y) elige la fila de la textura (cabeza, sudadera,
+			// pantalón, tenis) y el ancho (x) la columna. La mitad izquierda de la
+			// imagen es el frente y la derecha la espalda.
+			// -------------------------------------------------------------------
+			function aplicarSkin( modelo, textura ) {
+
+				const caja = new THREE.Box3();
+				const mallas = [];
+
+				modelo.traverse( function ( child ) {
+
+					if ( child.isMesh ) {
+
+						child.geometry.computeBoundingBox();
+						caja.union( child.geometry.boundingBox );
+						mallas.push( child );
+
+					}
+
+				} );
+
+				const alto = caja.max.y - caja.min.y;
+				const ancho = alto * AJUSTES_SKIN.anchoRelativo;
+				const centroX = ( caja.max.x + caja.min.x ) / 2;
+
+				console.log( 'Skin: alto del modelo =', alto.toFixed( 1 ), '| mallas =', mallas.length );
+
+				const material = new THREE.MeshStandardMaterial( { map: textura, roughness: 0.85, metalness: 0 } );
+
+				mallas.forEach( function ( malla ) {
+
+					const pos = malla.geometry.attributes.position;
+					const nor = malla.geometry.attributes.normal;
+					const uv = new Float32Array( pos.count * 2 );
+
+					for ( let i = 0; i < pos.count; i ++ ) {
+
+						let u = THREE.MathUtils.clamp( 0.5 + ( pos.getX( i ) - centroX ) / ancho, 0, 1 );
+						const v = THREE.MathUtils.clamp( ( pos.getY( i ) - caja.min.y ) / alto, 0, 1 );
+
+						const atras = nor ? nor.getZ( i ) < 0 : false;
+						if ( atras ) u = 1 - u; // la espalda se ve al revés, así el logo se lee bien
+
+						uv[ i * 2 ] = u * 0.5 + ( atras ? 0.5 : 0 );
+						uv[ i * 2 + 1 ] = v;
+
+					}
+
+					malla.geometry.setAttribute( 'uv', new THREE.BufferAttribute( uv, 2 ) );
+					malla.material = material;
+					malla.castShadow = true;
+					malla.receiveShadow = true;
+
+				} );
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function animate() {
+
+				const delta = clock.getDelta();
+
+				if ( mixer ) mixer.update( delta );
+
+				renderer.render( scene, camera );
+
+			}
+
+		</script>
+
+	</body>
+</html>
